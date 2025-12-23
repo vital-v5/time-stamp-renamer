@@ -7,33 +7,53 @@ import time
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog
-from PIL import Image
+from PIL import Image, ExifTags # ExifTagsを追加
 
 def get_file_info(filepath):
     filename = os.path.basename(filepath)
     date_str = ""
     sort_key = ""
+    
     try:
         with Image.open(filepath) as img:
+            # getexif()を使用してメタデータを取得
             exif = img.getexif()
             if exif:
-                raw_dt = exif.get(36867) or exif.get(306)
+                # タグIDを名前（DateTimeOriginal等）に変換して検索
+                exif_data = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
+                
+                # 1. 撮影日時（DateTimeOriginal）を最優先、次いで更新日時（DateTime）
+                raw_dt = exif_data.get('DateTimeOriginal') or exif_data.get('DateTime')
+                
                 if raw_dt:
-                    raw_dt = str(raw_dt)
+                    raw_dt = str(raw_dt).strip()
+                    # 標準的なEXIF形式 "YYYY:MM:DD HH:MM:SS" から日付部分を抽出
                     date_str = raw_dt[:10].replace(":", "") 
                     sort_key = raw_dt
     except Exception:
         pass 
+
+    # 2. EXIFがない場合、ファイル名に含まれる日付（8桁または6桁）を検索
     if not date_str:
         date_match = re.search(r"(\d{8}|\d{6})", filename)
         if date_match:
             d = date_match.group(1)
             date_str = d if len(d) == 8 else "20" + d
             sort_key = date_str
+
+    # 3. それでも取得できない場合、OSのファイルタイムスタンプを使用
     if not date_str:
-        mtime = os.path.getmtime(filepath)
+        stat = os.stat(filepath)
+        try:
+            # Windows/Macで可能な限り「作成日時」を取得
+            mtime = stat.st_birthtime 
+        except AttributeError:
+            # Linux等、作成日時が取れない場合は「更新日時」
+            mtime = stat.st_mtime
+            
         date_str = datetime.fromtimestamp(mtime).strftime('%Y%m%d')
         sort_key = str(mtime)
+
     return sort_key, date_str
 
 def sanitize_filename(name):
@@ -43,7 +63,7 @@ class RenameApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Time Stamp Rename App")
-        self.root.geometry("620x860") # 高さを少し余裕持たせました
+        self.root.geometry("620x860")
         
         # 背景：ネズミ色
         self.bg_main = "#ececec" 
@@ -57,25 +77,25 @@ class RenameApp:
         self.style.configure("TLabelframe", background="#ffffff", relief="flat")
         self.style.configure("TLabelframe.Label", background="#ffffff", foreground="#333333", font=("", 10, "bold"))
         
-        # ① フォルダ選択ボタン（太さを出し、グレーに）
+        # ① フォルダ選択ボタン
         self.style.configure("Select.TButton", 
                              background="#dddddd", 
                              foreground="#000000", 
                              font=("", 10, "bold"), 
-                             padding=(0, 12), # 上下の厚みを追加
+                             padding=(0, 12),
                              relief="flat")
         self.style.map("Select.TButton", background=[('active', '#bbbbbb')])
 
-        # ② 実行開始ボタン（太さを出し、黒→オレンジ、白文字）
+        # ② 実行開始ボタン
         self.style.configure("Run.TButton", 
                              background="#000000", 
                              foreground="#ffffff", 
-                             font=("", 11, "bold"), # 文字も少し大きく
-                             padding=(0, 12), # 上下の厚みを追加
+                             font=("", 11, "bold"),
+                             padding=(0, 12),
                              relief="flat")
         self.style.map("Run.TButton", 
-                       background=[('active', '#ff9800')], # マウスホバーでオレンジ
-                       foreground=[('active', '#ffffff')]) # オレンジの上でも白文字を維持
+                       background=[('active', '#ff9800')],
+                       foreground=[('active', '#ffffff')])
 
         self.raw_data = [] 
         self.target_folder = ""
@@ -100,7 +120,7 @@ class RenameApp:
         self.num_var.trace_add("write", lambda *args: self.update_example())
         tk.Entry(input_frame, width=8, textvariable=self.num_var, relief="solid", borderwidth=1).grid(row=0, column=3, padx=5)
 
-        # オンオフスイッチ（高さを少し出す）
+        # オンオフスイッチ
         self.var_include_date = tk.BooleanVar(value=True)
         self.check_date = tk.Checkbutton(self.frame_setting, 
                                          text=" ファイル名の先頭に日付を付ける ", 
@@ -118,7 +138,7 @@ class RenameApp:
         tk.Radiobutton(sort_frame, text="名前順", variable=self.sort_mode, value="name", command=self.resort_and_preview, bg="#ffffff", font=("", 9)).pack(side="left", padx=10)
         tk.Radiobutton(sort_frame, text="日付順", variable=self.sort_mode, value="date", command=self.resort_and_preview, bg="#ffffff", font=("", 9)).pack(side="left")
 
-        # --- 完成イメージエリア（アリスブルー + 濃い青の細枠線） ---
+        # --- 完成イメージエリア ---
         self.example_frame = tk.Frame(self.root, bg="#f0f8ff", padx=10, pady=15, highlightbackground="#4682b4", highlightthickness=1)
         self.example_frame.pack(padx=20, pady=5, fill="x")
         self.example_label = tk.Label(self.example_frame, text="", bg="#f0f8ff", fg="#000000", font=("", 10, "bold"))
@@ -143,7 +163,7 @@ class RenameApp:
         self.percent_label = tk.Label(self.root, text="", bg=self.bg_main, fg="#000000", font=("Consolas", 18, "bold"))
         self.percent_label.pack()
 
-        # ボタン（幅を広げ、厚みを持たせた）
+        # ボタン
         self.btn_select = ttk.Button(self.root, text="① フォルダを選択して解析", style="Select.TButton", command=self.select_folder)
         self.btn_select.pack(fill="x", padx=60, pady=8)
 
